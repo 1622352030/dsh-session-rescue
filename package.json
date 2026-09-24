@@ -1,0 +1,52 @@
+{
+  "name": "dsh-session-rescue",
+  "version": "0.1.0",
+  "description": "Watchdog that detects a stalled Harness turn, cancels it, rebuilds the session in place and re-runs the pending message.",
+  "keywords": [
+    "dsh-plugin",
+    "dsh",
+    "deepseek-harness",
+    "session",
+    "watchdog",
+    "recovery"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.15"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/1622352030/dsh-session-rescue.git"
+  },
+  "homepage": "https://github.com/1622352030/dsh-session-rescue#readme",
+  "bugs": {
+    "url": "https://github.com/1622352030/dsh-session-rescue/issues"
+  },
+  "files": [
+    "src",
+    "bin",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE",
+    "screenshots.json"
+  ],
+  "main": "src/host.js",
+  "bin": {
+    "dsh-session-rescue": "bin/dsh-session-rescue.mjs"
+  },
+  "exports": {
+    ".": "./src/host.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {},
+  "scripts": {
+    "typecheck": "node --check src/detect.js && node --check src/repair-plan.js && node --check src/frames.js && node --check src/host.js",
+    "test": "node --test test/detect.test.js test/repair-plan.test.js test/frames.test.js test/host.test.js"
+  }
+}

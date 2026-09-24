@@ -1,0 +1,16 @@
+node_modules/
+dist/
+lib/
+*.log
+*.tgz
+backup/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# ── 本地取证与投稿材料：含本机绝对路径 / 会话 id / 内部结论，**不随公开仓库发布** ──
+docs/API-NOTES.md
+docs/PLAN.md
+docs/SCAN-REPORT.md
+docs/MARKET-CHECKLIST.md

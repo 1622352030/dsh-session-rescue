@@ -1,0 +1,14 @@
+# dsh-session-rescue —— 插件装载补丁层（profile patch）
+#
+# 语法来源（实测）：`insert` 项允许的键 = id / name / config / group / disabled / inject
+#   （`…\node_modules\@deepseek-ai\cordis-plugin-loader\src\config\entry.ts:9-22`）
+# 纪律（实测）：patch 是**整键替换、不深合并**；**空文件会导致启动失败**，故保留数组形态。
+#   （`…\@deepseek-ai\dsh-app-boot\README.zh.md:139` 与 `:53`）
+#
+# 说明：本插件当前**只实现 host 侧**，因此这里只插入一条；
+# client 侧（状态展示）尚未实现，故 package.json 里也**没有**声明 `dsh.client`——
+# 市场规范要求"描述与代码一致"，未实现的能力不做声明。
+
+- insert:
+    - id: session-rescue
+      name: dsh-session-rescue
