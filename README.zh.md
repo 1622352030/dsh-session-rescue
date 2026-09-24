@@ -31,10 +31,8 @@ turn/start              ← 轮次开起来了
 
 ## 明确写在前面的限制
 
-- **「就地重建会话」没有实现**。本机这个 harness 版本**没有**公开 API 能重载一个「活着的」会话，
-  而唯一能 `dispose()` 活 agent 的句柄只交给创建它的消费方（见 `docs/DESIGN.md`）。
-  因此插件**只释放挂起轮并保留待处理消息**，不会假装做过重建；`rebuild-session` 会以
-  `no-public-api` 如实登记。
+- **「就地重建会话」是 best-effort 实现，且尚未在真实 harness 上验证。** 本版本没有单一的公开 reload/rebuild；而仍然活着的会话无法被 prepare（persistence.prepare 会先等它退场，且它自身没有超时）。所以插件先释放挂起轮，再**有界地**等待该会话退场，然后调用公开的 ctx.agents.resume(...)——这也是唯一能拿到 AgentHandle 的途径。若迟迟不退场、或 resume 抛错，一律登记为失败，绝不假装成功。
+
 - 检测器的 `mid-turn` 判据默认**只上报**：在真实日志上它会在正常的长静默上误报（实测 31–119 s），
   而 `never-started`（开了轮就没动过）在全部已知挂住样本上命中且零误报。
 - 尚未在真实 harness 上验证（见 `docs/DESIGN.md`）。

@@ -54,10 +54,8 @@ Never: modify Harness packages, edit session logs, touch other sessions, or rest
 
 ## Limitations stated up front
 
-- **In-place session rebuild is not implemented.** This harness build exposes no public API to reload a
-  live session, and the only handle able to dispose a live agent is given to its creator
-  (see `docs/DESIGN.md`). The plugin therefore releases the hung turn and preserves the pending
-  message instead of pretending to rebuild. `rebuild-session` is recorded as `no-public-api`, never faked.
+- **In-place session rebuild is best-effort, and not yet verified on a live harness.** This build has no single public reload/rebuild call, and a session that is still live cannot be prepared (persistence.prepare waits for retirement first, and that wait has no timeout of its own). So the plugin releases the hung turn, waits a **bounded** time for that session to retire, and then calls the public ctx.agents.resume(...) - which is also the only way to obtain an AgentHandle. If the session does not retire in time, or the resume throws, the attempt is recorded as a failure. Nothing is faked.
+
 - The detector's `mid-turn` signal is **report-only** by default: in real logs it fires on ordinary long
   silences (31–119 s observed), while `never-started` matched every known stall with no false positives.
 - Nothing has been validated against a live harness yet — see `docs/DESIGN.md`.
