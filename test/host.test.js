@@ -258,6 +258,35 @@ test('自观测：从真实帧序里量出 preStep 窗口（turn/start → 首�
   stop();
 });
 
+test('★载入完成即安排一次抢跑：不依赖 agent/status 是否触发', async () => {
+  const f = fakeCtx({ seq: 200_000 });
+  apply(f.ctx, { ...CFG, loadGuardDelayMs: 10 });
+  const stop = f.start();
+
+  // 故意**不**发 agent/status —— 只发一条 session/end-seed
+  f.emitSession({ type: 'session/end-seed', time: Date.now() });
+  await sleep(60);
+
+  assert.equal(f.calls.length, 1, '仅凭 session/end-seed 也应触发 GUARD');
+  assert.match(f.calls[0].commandId, /^session-rescue-guard-/);
+  stop();
+});
+
+test('载入抢跑与 agent/status 谁先到都只执行一次', async () => {
+  const f = fakeCtx({ seq: 200_000 });
+  apply(f.ctx, { ...CFG, loadGuardDelayMs: 10 });
+  const stop = f.start();
+
+  f.emitSession({ type: 'session/end-seed', time: Date.now() });
+  f.emitIdle();               // 先到
+  await sleep(10);
+  f.emitSession({ type: 'session/end-seed', time: Date.now() + 1 }); // 又一次载入事件
+  await sleep(60);
+
+  assert.equal(f.calls.length, 1, '两个入口都到齐也只能压一次');
+  stop();
+});
+
 test('/rescue 命令：status / on / off / now 与用法提示', async () => {
   const f = fakeCtx({ seq: 200_000 });
   apply(f.ctx, CFG);

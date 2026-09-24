@@ -1,31 +1,30 @@
 /**
  * dsh-session-rescue —— host 侧插件入口
  *
- * 目标：修复 DSH「冷启动后第一个回合永久转圈」的问题。
+ * 目标：避免 DSH「冷启动后第一个回合永久转圈」这一**现象**。
  *
- * ── 已定位的机制（证据级：实测 + 源码行号，详见 docs/DESIGN.md） ─────────────────
- * 1. 进程重启 / 会话载入会创建**新的 Session 对象**。
- * 2. token meter 的重放状态挂在 `WeakMap<Session, state>` 上
- *    （`@deepseek-ai/dsh-token-meter/lib/index.js:589`）⇒ 新对象 ⇒ 状态为空。
- * 3. `dsh-compaction-basic` 的自动压缩挂在 `agent/pre-step` 上（`lib/index.js:782`），
- *    它无条件调用 `meter.measure(session)`（`:862`）⇒ `_sync(session)`。
- * 4. `_sync` 是**同步**全量重放（`:679-697`）：
- *      while (state.consumedEvents < session.seq) { this._foldEvent(...); ... }
- *    本机实测该会话 seq 已达 51.7 万 ⇒ 51.7 万次迭代。
- * 5. 它跑在 `preStep` 里 —— 即 `turn/start` 与 `step/start` 之间。同步循环阻塞事件循环，
- *    于是 **`step/start` 永远写不出来**（日志永久静默），`while (await this.turn())` 永不返回，
- *    界面永久转圈。
- * 6. 实测对照：seq 35,236 同进程热轮 preStep=231 ms；seq 45,585 冷启动首轮 preStep=16,008 ms
- *    （差 70 倍，唯一变量是该 Session 对象是否新建）；seq 9.3 万 / 38.9 万 / 44.6 万时首轮永不返回。
- *    用户三次实测均以**压缩**恢复，重启无效（重启 = 又冷一次）。
+ * ── 实测事实（唯一可依据的部分；★病因未确定）──────────────────────────────────────
+ * · 现象签名：`turn/start` 写下之后**再无任何帧**（没有 `step/start`），日志永久静默、界面永久转圈。
+ *   静默窗口落在 agent-loop 的 `preStep`（`:539`，介于 `:528` 的 `turn/start` 与 `:553` 的
+ *   `step/start` 之间）。
+ * · 8/8 次卡死都发生在**进程重启后的第一个回合**（与 harness 日志 `[desktop] starting` 逐一对上）；
+ *   **重启不能脱困**（每重启一次就再来一次）；**`/compact` 是唯一被观测到的恢复手段（3/3）**，
+ *   且压缩之后的下一轮都正常（turn 8 / 31 / 36）。
+ * · 冷启动首轮的 preStep 远贵于同进程热轮，且随会话规模增长：
+ *   seq 35,236 热 = 231 ms｜seq 45,585 冷 = 16,008 ms｜seq 9.3 万 / 38.9 万 / 44.6 万 冷 = 永不返回。
+ * · 热轮同样昂贵并会**饱和**（231 ms @35k → ~1.1 s @212k → 平台期 3–6 s）⇒ 代价在**每个回合都走**
+ *   的路径上，而不只在冷启动路径上。
+ * · ★「冷启动时 token meter 从 seq 0 全量重放」这一度是主假设，已被 `tools/measure-replay.js`
+ *   用产品自身的 `TokenMeter._sync` **实测证伪**：整份 526,383 seq 只要 47.0 ms，比 16,008 ms
+ *   小约 340 倍。**本插件不再声称知道病因**，详见 docs/DESIGN.md。
  *
- * ── 因此本插件的修复方式 ────────────────────────────────────────────────────────
- * 不检测、不补超时（冷重放是同步 CPU 循环，`signal.throwIfAborted()` 根本没机会执行，
- * v1 的 cancel + 冷重建动作模型对该故障**无效**，已撤除）。改为两件事：
- *   ① GUARD：载入后规模已达危险线时，抢在用户首个回合之前压缩 ——
- *      把"躲不掉的重放代价"从用户回合里挪到载入后的空闲期，并把 surface 变小。
- *   ② COMPACT：回合之间（agent 空闲）按**增量**主动压缩，使下一次冷启动的重放停留在秒级。
- * 触发与决策全部在 src/guard.js / src/size.js 里，是纯函数，可离线单测。
+ * ── 因此本插件的做法：不解释病因，只避免现象 ─────────────────────────────────────
+ * 唯一被实测有效的动作是压缩，而现象只出现在「载入后、压缩前」这个窗口。所以把它提前：
+ *   ① GUARD：会话载入后若规模已达危险线，抢在用户首个回合**之前**压缩。
+ *   ② COMPACT：回合之间（agent 空闲）按**增量**主动压缩（seq 不会回落，绝对阈值会反复触发）。
+ * 这是**避让**，不是修复：病因未明，本插件不声称能消除根因。
+ * v1 的 cancel + 冷重建动作模型已撤除 —— 实测无效：重启与取消都不能脱困，只有压缩有效。
+ * 触发与决策在 src/guard.js / src/size.js，纯函数，可离线单测。
  *
  * ── 安全边界 ──────────────────────────────────────────────────────────────────
  * 只调用官方压缩服务 `ctx.compaction.compactNow(agent, signal, commandId)`
@@ -49,6 +48,10 @@ export const DEFAULTS = {
   cooldownMs: SIZE_DEFAULTS.cooldownMs,
   /** 巡检间隔（ms）——`agent/status` 之外的兜底 */
   pollMs: 30_000,
+  /** 会话载入完成（seed 结束）后多久尝试抢跑一次（ms）。
+   *  ★不能只依赖 `agent/status === "idle"`：该事件在启动时是否一定触发未经证实，
+   *  而"用户首个回合之前"这个时机正是本插件唯一要抢的东西。 */
+  loadGuardDelayMs: 2_000,
   /** 单次压缩调用的上限（ms），超时即放弃本次（不阻塞、不重试到天荒地老） */
   compactionTimeoutMs: 10 * 60_000,
   /** seq 阈值（见 src/size.js 的标定说明） */
@@ -93,6 +96,15 @@ export function apply(ctx, config = {}) {
    * 我们也没见过 ⇒ 下一个回合就是"冷回合"。这两个判断在**同一个进程**里必然一致。
    */
   const seen = new WeakSet();
+  /**
+   * 「本插件已为该会话跑过一次压缩」的记账，按 **Session 对象身份** 记。
+   * ★这是**设计选择，不是机制结论**：那个变慢的监听器究竟按对象、按 sessionId 还是按进程冷，
+   * 目前并不知道（原先拿 token meter 的 WeakMap 来论证这件事的写法已撤回）。
+   * 选择按对象 = 「每次重新载入都当成可能又会卡，于是再抢一次」——偏保守、偏向"避免现象"，
+   * 代价是最坏情况下每次重新载入多付一次压缩。若按 sessionId 记，同一进程内的重新载入会被
+   * 误判成"已处理"而漏掉唯一要抢的时机。
+   */
+  const warmed = new WeakSet();
   /** 本进程见过的会话 id 集合（巡检按 id 取 agent 用，见下面的 setInterval） */
   const knownSessions = new Set();
   /** 会话 id → 未结束的 turn 号（用于确认 agent 真的空闲） */
@@ -174,6 +186,7 @@ export function apply(ctx, config = {}) {
         // 载入完成（seed 结束）。此处一定是新的 Session 对象，冷判定已在上面登记。
         guard.observeLoad(sessionId, sessionSeq(session), false, nowMs());
         note({ event: 'session-loaded', sessionId, seq: sessionSeq(session) });
+        scheduleLoadGuard(sessionId);
         break;
       default:
         break;
@@ -240,9 +253,25 @@ export function apply(ctx, config = {}) {
       // 只有**真的跑完了一次 measure**（成功或非 busy 的失败）才算这个 Session 已经预热。
       // busy 表示核心拒绝了本次调用，冷重放代价尚未支付 —— 此时标记预热会让冷会话
       // 错过抢跑，用户的第一个回合照样卡死。busy 的重试由 guard 的冷却与 busyStreak 上限约束。
-      if (!wasBusy) guard.markWarm(sessionId);
+      if (!wasBusy) {
+        guard.markWarm(sessionId);
+        warmed.add(agent.session);
+      }
       busy.delete(sessionId);
     }
+  }
+
+  /**
+   * 载入完成后的抢跑入口。**与 `agent/status` 相互独立**：两者谁先到都行，靠 guard 的
+   * 冷却与 `coldGuardDone` 保证只真正执行一次。这是本插件最关键的一个时机 ——
+   * 抢在用户首个回合之前把那笔代价付掉。
+   */
+  function scheduleLoadGuard(sessionId) {
+    const timer = setTimeout(() => {
+      const agent = ctx.agents?.get?.(sessionId);
+      if (agent) void maybeAct(agent);
+    }, cfg.loadGuardDelayMs);
+    if (typeof timer.unref === 'function') timer.unref();
   }
 
   async function maybeAct(agent) {
@@ -258,7 +287,7 @@ export function apply(ctx, config = {}) {
     const decision = guard.decide({
       sessionId,
       seq: sessionSeq(session),
-      cold: !guard.get(sessionId)?.warm,
+      cold: !warmed.has(session),
       idle: true,
       now: nowMs(),
     });
@@ -312,7 +341,7 @@ export function apply(ctx, config = {}) {
       const pre = Number.isFinite(st.lastPreStepMs) ? `${st.lastPreStepMs}ms` : '—';
       const coldPre = Number.isFinite(st.coldPreStepMs) ? `${st.coldPreStepMs}ms` : '—';
       lines.push(
-        `· ${sessionId.slice(0, 22)} ${st.warm ? '已预热' : '冷（下次 measure 会全量重放）'}｜preStep 最近 ${pre}／冷启动 ${coldPre}｜尝试 ${st.attempts}`,
+        `· ${sessionId.slice(0, 22)} ${st.warm ? '已处理（本进程内压缩过）' : '未处理（本次载入尚未压缩）'}｜preStep 最近 ${pre}／冷启动 ${coldPre}｜尝试 ${st.attempts}`,
       );
       if (st.lastResult) {
         const r = st.lastResult;

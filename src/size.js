@@ -2,11 +2,9 @@
  * size.js —— 会话「危险规模」的度量与分级（纯函数，无 I/O，可离线单测）
  *
  * 为什么用 `session.seq` 当驱动量：
- *   DSH 的 token meter 在冷启动时执行
- *     while (state.consumedEvents < session.seq) { fold(eventAt(n)); consumedEvents = n + 1 }
- *   （`@deepseek-ai/dsh-token-meter/lib/index.js:691`）——它**按整数 seq 空间逐格推进**。
- *   而该状态挂在 `WeakMap<Session, state>`（同文件 `:589`）上：进程重启 / 会话载入会产生
- *   新的 Session 对象 ⇒ 状态为空 ⇒ 从 0 重放整份日志。⇒ **seq 的大小就是重放的迭代次数。**
+ *   `seq` 免费可读、单调不减，且实测与会话"变贵"的趋势同步（标定见下）。它是**风险的代理量**，
+ *   不是代价本身 —— 病因尚未确定，所以**不要**把它解释成某个具体实现的长度。
+ *   （曾据 token meter 的 `_sync` 重放来论证这一点，该论证已被实测证伪并撤回，见 docs/DESIGN.md。）
  *
  * ★重要事实：压缩**不会**缩短 seq 空间（会话日志是只追加的，压缩本身还要追加
  *   compaction/start + compaction/summary + compaction/end 三条记录）。所以「seq 超过阈值就压缩」
@@ -19,6 +17,7 @@
  *   seq 388,757  冷启动首轮      永不返回（用户等 32~47s 后放弃）
  *   seq 446,442  冷启动首轮      永不返回（用户等 41s 后放弃）
  * ⇒ 提醒线取 40,000（冷启动约十几秒，已明显可感），危险线取 80,000（进入"永不返回"区间）。
+ * 这是**标定**，不是推导：换机器或换会话形态请用 `/rescue status` 重新量。
  */
 
 /** 规模分级 */

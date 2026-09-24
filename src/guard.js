@@ -3,12 +3,12 @@
  *
  * 两种触发时机，对应两种代价位置：
  *   ① GUARD（载入后、用户首个回合之前）
- *      冷启动的同步全量重放本来就是**躲不掉**的一笔代价；区别只在于付在哪里。
+ *      8/8 次卡死都发生在"载入后的第一个回合"，而 /compact 之后的下一轮都正常（3/3 实测）。
  *      付在用户回合里 = 永久转圈；付在载入后的空闲期 = 启动慢一次。
  *      所以：会话刚载入（本进程第一次见到该 Session 对象）且规模已达危险线时，
  *      抢在用户发消息之前把压缩跑掉。
  *   ② COMPACT（回合之间、agent 空闲）
- *      使 surface 保持小，从而让**下一次**冷启动的重放停留在秒级。
+ *      保持 surface 小，使后续载入不必面对一个巨大的会话。
  *
  * 反抖动：seq 单调不减（压缩只追加），所以判据一律用 **增量**
  * `seq - lastCompactedSeq >= minGrowthSeq`，否则会在每次空闲反复触发。
@@ -40,7 +40,7 @@ function stateFor(states, sessionId) {
       lastCompactedSeq: null,
       lastAttemptAt: null,
       attempts: 0,
-      /** 连续 busy 次数（busy ≠ 已支付重放代价，所以不计入 attempts，但要有上限） */
+      /** 连续 busy 次数（busy ≠ 本插件已真正跑成一次压缩，所以不计入 attempts，但要有上限） */
       busyStreak: 0,
       lastResult: null,
       /** 本插件的自观测：最近一次 turn/start → 首个 step/start 的耗时 */
@@ -121,7 +121,7 @@ export function createGuard(cfg = {}) {
     const st = stateFor(states, sessionId);
     const busy = result.code === 'busy';
     if (busy) {
-      // busy＝核心侧已有并发压缩或 agent 不空闲：**我们并没有付掉冷重放代价**，
+      // busy＝核心侧已有并发压缩或 agent 不空闲：**本插件其实一次压缩都没真正跑成**，
       // 所以不计入 attempts、也绝不能让调用方把该会话标记成"已预热"；
       // 但仍需有上限，否则会和冷却一起变成无限重试。
       st.busyStreak += 1;
@@ -152,7 +152,7 @@ export function createGuard(cfg = {}) {
     return st;
   }
 
-  /** 该 Session 对象已被本插件确认为"热"（重放已完成）。 */
+  /** 本进程内该会话已被本插件执行过一次压缩（不代表根因已消失）。 */
   function markWarm(sessionId) {
     const st = stateFor(states, sessionId);
     st.warm = true;
