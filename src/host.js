@@ -99,13 +99,57 @@ export function apply(ctx, config = {}) {
     st.det.observe({ type: event.type, time: event.time, turn: event.data?.turn ?? null });
   });
 
-  // ── 2) 动作执行：只执行真正有公开链路的动作（A3/A4/A5）
-  function execute(sessionId, plan) {
+  // ── 2) 动作执行：只用**公开**链路
+  //
+  //  释放：`ctx.agents.get(id).cancel(cause, {keepInbox:true})` —— 与 Web Stop 同一落点。
+  //  冷重建：本版本**没有**单一公开的 reload/rebuild；能走通的组合是
+  //    ① 等该会话从 SessionStore **退场**——`persistence.prepare` 内部先 `waitForRetirement`
+  //       再检查 live，而那个等待**没有超时**；所以我们自己加**有界**等待，绝不无限等；
+  //    ② `ctx.agents.resume({ resumeSessionId })` —— 公开，且**返回 AgentHandle**
+  //       （`{ agent, dispose }`）⇒ **谁 resume，谁就拿到可释放的句柄**。
+  //  ⚠️ 仍可能失败（会话迟迟不退场、resume 抛错）——失败一律**如实登记**，不假装做过。
+  async function waitForRetirement(sessionId) {
+    const deadline = Date.now() + cfg.retirementTimeoutMs;
+    for (;;) {
+      const live = ctx.sessions?.get?.(sessionId);
+      if (!live) return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, cfg.retirementPollMs));
+    }
+  }
+
+  async function rebuildSession(sessionId) {
+    if (typeof ctx.agents?.resume !== 'function') {
+      note({ sessionId, action: ACTION.REBUILD, ok: false, why: 'agents.resume unavailable' });
+      return false;
+    }
+    const retired = await waitForRetirement(sessionId);
+    if (!retired) {
+      note({
+        sessionId,
+        action: ACTION.REBUILD,
+        ok: false,
+        why: `session still live after ${cfg.retirementTimeoutMs}ms (retirement timeout)`,
+      });
+      return false;
+    }
+    try {
+      const handle = await ctx.agents.resume({ resumeSessionId: sessionId });
+      handles.set(sessionId, handle);
+      note({ sessionId, action: ACTION.REBUILD, ok: true, why: 'cold resume via ctx.agents.resume' });
+      return true;
+    } catch (err) {
+      note({ sessionId, action: ACTION.REBUILD, ok: false, why: String(err && err.message ? err.message : err) });
+      return false;
+    }
+  }
+
+  async function execute(sessionId, plan) {
     for (const action of plan.actions) {
       if (action.kind === ACTION.RELEASE) {
         const agent = ctx.agents?.get?.(sessionId);
         if (!agent || typeof agent.cancel !== 'function') {
-          // 拿不到 live agent 句柄时如实降级，不假装执行过
+          // 拿不到 live agent 时如实降级，不假装执行过
           note({ sessionId, action: ACTION.RELEASE, ok: false, why: 'no-live-agent-handle' });
           continue;
         }
@@ -116,21 +160,23 @@ export function apply(ctx, config = {}) {
           note({ sessionId, action: ACTION.RELEASE, ok: false, why: String(err && err.message ? err.message : err) });
         }
       } else if (action.kind === ACTION.REBUILD) {
-        // ★如实降级：本机没有任何单一公开 API 能重建一个"活着的"会话（A4），
-        //   唯一能释放活 agent 的 AgentHandle 只暴露给创建方（A5，待真机验证）。
-        //   ⇒ 这里**不执行**，只登记，绝不对外声称做过。
-        note({ sessionId, action: ACTION.REBUILD, ok: false, why: 'no-public-api (see docs/API-NOTES.md §6)' });
+        if (!cfg.rebuildAfterRelease) {
+          note({ sessionId, action: ACTION.REBUILD, ok: false, why: 'rebuild disabled by config' });
+          continue;
+        }
+        await rebuildSession(sessionId);
       } else if (action.kind === ACTION.REDELIVER) {
         // cancel 使用了 { keepInbox: true } ⇒ 尽量不丢那条未处理消息。
-        // 主动重投会重复执行用户的工具调用，故首版不实现（由 planner 的保守策略一致）。
+        // 主动重投会重复执行用户的工具调用，故首版不实现（与 planner 的保守策略一致）。
         note({ sessionId, action: ACTION.REDELIVER, ok: false, why: 'not-implemented-by-design' });
       }
     }
   }
 
-  function tick() {
+  async function tick() {
     const now = Date.now();
     for (const [sessionId, st] of tracked) {
+      if (inFlight.has(sessionId)) continue;
       const verdict = st.det.check(now);
       if (!verdict) continue;
       const hasPendingMessage =
@@ -139,9 +185,14 @@ export function apply(ctx, config = {}) {
       note({ sessionId, verdict: verdict.kind, waitedMs: verdict.waitedMs, plan: plan.reason, mode: plan.mode });
 
       if (plan.mode !== MODE.APPLY || plan.reason !== 'auto-repair') continue;
-      execute(sessionId, plan);
-      planner.noteApplied(sessionId);
-      st.det.resolve();
+      inFlight.add(sessionId);
+      try {
+        await execute(sessionId, plan);
+        planner.noteApplied(sessionId);
+        st.det.resolve();
+      } finally {
+        inFlight.delete(sessionId);
+      }
     }
   }
 

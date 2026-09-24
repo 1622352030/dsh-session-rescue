@@ -1,7 +1,7 @@
 # dsh-session-rescue
 
 > **状态：开发中 —— 尚未在真实 harness 上验证。** host 侧插件本体、检测 / 策略 / 日志分析三个模块
-> 以及一个只读扫描 CLI 已经实现，有 **46 个测试**覆盖；**尚未安装进任何 DSH profile**，
+> 以及一个只读扫描 CLI 已经实现，有 **50 个测试**覆盖；**尚未安装进任何 DSH profile**，
 > client 侧状态界面未实现。本 README **只声明代码真正做到的事**。
 
 一个用来**就地救回「挂住的会话轮次」**的 Harness 插件 —— 而不是让用户去重启整个应用。
@@ -62,7 +62,7 @@ node tools/replay.js <session-id> 20000 --plan          # 用真实日志回放�
 
 | 路径 | 说明 |
 |---|---|
-| `src/host.js` | host 侧插件入口：订阅 `session/event` → 轮询判定 → 出策略 → apply 模式下释放挂起轮 |
+| `src/host.js` | host 侧插件入口：订阅 `session/event` → 轮询判定 → 出策略 → apply 模式下释放挂起轮并尝试有界冷重建 |
 | `src/detect.js` | 挂住检测状态机（零依赖、时钟可注入） |
 | `src/repair-plan.js` | 有界修复策略：每会话次数上限、冷却、默认 dry-run、保守补投 |
 | `src/frames.js` | 只读日志分析：逐帧 zstd 解压、合成收尾帧判据、未处理消息定位 |

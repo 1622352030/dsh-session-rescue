@@ -2,7 +2,7 @@
 
 > **Status: work in progress — not verified on a live harness yet.** The host-side plugin body, the
 > detection / strategy / log-analysis modules and a read-only scan CLI are implemented and covered by
-> 46 tests. **Nothing has been installed into a DSH profile yet**, and the client-side status UI is
+> 50 tests. **Nothing has been installed into a DSH profile yet**, and the client-side status UI is
 > not implemented. This README only claims what the code actually does.
 
 A Harness plugin that recovers a **stalled session turn** in place, instead of asking the user
@@ -40,7 +40,7 @@ Never: modify Harness packages, edit session logs, touch other sessions, or rest
 
 | Path | What it is |
 |---|---|
-| `src/host.js` | Host plugin entry: subscribes to `session/event`, polls for stalls, plans a repair, and in apply mode releases the hung turn. |
+| `src/host.js` | Host plugin entry: subscribes to `session/event`, polls for stalls, plans a repair; in apply mode it releases the hung turn and then attempts a bounded cold resume. |
 | `src/detect.js` | Stall detector — dependency-free, clock-injectable state machine over session events. |
 | `src/repair-plan.js` | Bounded repair strategy: per-session attempt caps, cooldown, dry-run by default, conservative redelivery. |
 | `src/frames.js` | Read-only session-log analysis: per-frame zstd decode, synthetic-closer detection, unprocessed-message lookup. |
