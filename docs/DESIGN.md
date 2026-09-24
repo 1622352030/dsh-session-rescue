@@ -112,6 +112,33 @@ cooldown and a consecutive-`busy` cap (`maxBusyStreak`).
 - It does not create sessions and does not resume them — that would duplicate what the app already does.
 - With `enabled: false` it observes and reports only.
 
+## Verification performed
+
+Offline and isolated only. The running Harness instance was never used as a test target — that mistake
+was made once, cost the user a hung session, and is not repeated.
+
+| What | How | Result |
+|---|---|---|
+| Decision logic | `test/size.test.js` + `test/guard.test.js`, pure state machine, no I/O | pass |
+| Plugin wiring | `test/host.test.js` against a fake cordis context: event delivery, GUARD/COMPACT paths, anti-thrash, `busy` semantics, caps, command branches | pass |
+| Stall signature vs. real logs | `tools/replay.js` on an observed 5.9 MB session | 5/5 known stalls hit, 0 false positives |
+| **Bundle loading, hooks and the compaction seam in a real Harness** | `dsh --profile headless` in an **isolated** `DSH_HOME` with the plugin linked in and `dangerSeq: 0` forced | the run wrote a real `compaction/start` frame carrying `sourceCommandId: "session-rescue-guard-1"` — the plugin's own id. Reproduced twice. |
+
+`node --test test/*.test.js` → **55 pass, 0 fail**.
+
+What the isolated run proves: the plugin loads as a bundle in a real profile; `session/event` and
+`agent/status` fire and the idle handler runs; `ctx.get('compaction')` resolves to the real compaction
+service; `compactNow(agent, signal, commandId)` is callable and opens a genuine compaction transaction; a
+failure inside it is recorded honestly in `compaction/end` without breaking the harness; and exactly one
+attempt is made — anti-thrash holds in a live harness, not just in tests.
+
+What it does **not** prove: the cold-start stall was not reproduced under control, and the
+"GUARD runs before the user's first turn" ordering was not exercised, because headless dispatches its task
+immediately and so never leaves an idle window before turn 1. That ordering is covered by unit tests only.
+Reproducing the stall itself needs a session loaded from disk plus a resume path (`dsh-acp`
+`session.resume` / `session.prompt`, or `dsh-agent-loop`'s configured `resumeSessionId`); that harness has
+not been built.
+
 ## Open questions (stated, not hidden)
 
 - **Why compaction makes the next cold start cheap is not established.** The measured effect is solid

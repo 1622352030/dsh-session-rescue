@@ -1,9 +1,10 @@
 # dsh-session-rescue
 
 > **Status: v0.2.0 — prevention, not detection.** The failure mechanism below was traced to specific
-> source lines and measured on a real 5.9 MB session log; the plugin logic is covered by 55 tests.
-> The plugin has **not** yet been run end-to-end on a live Harness instance, and one mechanism detail
-> (why compaction makes the next cold start cheap) is still formally unproven — see *Limitations*.
+> source lines and measured on a real 5.9 MB session log; the plugin logic is covered by 55 tests
+> (55 pass / 0 fail), and the plugin has been loaded and exercised in an **isolated** `DSH_HOME`
+> (never against the running instance). The stall itself has **not** been reproduced under control yet,
+> and one mechanism detail is still formally unproven — see *Limitations*.
 
 A DeepSeek Harness plugin that stops the **cold-start turn stall**: after a restart or a session load,
 the first turn can block forever with the UI spinning and nothing in the log. This plugin prevents that
@@ -122,9 +123,11 @@ measure your own with `/rescue status` and adjust.
 
 ## Limitations stated up front
 
-- **Not yet verified end-to-end on a live Harness.** The logic is covered by unit and integration tests
-  against a fake `ctx`; the mechanism is supported by source reading plus measurements taken from real
-  session logs. There is no controlled reproduction yet.
+- **Verified in an isolated `DSH_HOME`, not end-to-end against the stall.** A real headless Harness run
+  loaded the plugin, fired its `agent/status` hook, resolved `ctx.get('compaction')`, and opened a real
+  compaction transaction (`compaction/start` carrying `sourceCommandId: "session-rescue-guard-1"`) —
+  reproduced twice. The stall itself was **not** reproduced, and the "compact before the first turn"
+  ordering is covered by unit tests only. See `docs/DESIGN.md` → *Verification performed*.
 - **The size threshold is a proxy.** What actually costs time is the replay's per-event work, which
   cannot be measured from outside without paying for it. `seq` is the driver of the loop and is free to
   read, so it is used as the proxy — calibrated, not derived.

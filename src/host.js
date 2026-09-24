@@ -115,6 +115,23 @@ export function apply(ctx, config = {}) {
     return svc ?? ctx.compaction ?? null;
   }
 
+  // 走 harness 自己的 logger，便于在 headless/无人值守场景观察（/rescue status 只在交互时可见）
+  const TAG = '[dsh-session-rescue]';
+  function logInfo(msg) {
+    try {
+      (ctx.logger?.info ?? ctx.logger?.log)?.call(ctx.logger, `${TAG} ${msg}`);
+    } catch {
+      /* 日志失败绝不影响主流程 */
+    }
+  }
+  function logWarn(msg) {
+    try {
+      (ctx.logger?.warn ?? ctx.logger?.info)?.call(ctx.logger, `${TAG} ${msg}`);
+    } catch {
+      /* 同上 */
+    }
+  }
+
   // ── 1) 观测：唯一正确的帧来源是 session/event（帧类型名不是 cordis 事件名）
   ctx.on('session/event', (session, event) => {
     const sessionId = session?.id;
@@ -175,6 +192,7 @@ export function apply(ctx, config = {}) {
     const svc = compactionService();
     if (!svc || typeof svc.compactNow !== 'function') {
       note({ event: 'compaction-unavailable', sessionId, why: 'ctx.compaction 不可用' });
+      logWarn('compaction service unavailable (ctx.get("compaction") returned nothing); reporting only');
       return;
     }
     const controller = new AbortController();
@@ -207,11 +225,16 @@ export function apply(ctx, config = {}) {
         items: result.shadowedSeqs?.length ?? null,
         tokens: result.shadowedTokenCount ?? null,
       });
+      logInfo(
+        `${decision.action} ok session=${sessionId.slice(0, 18)} seq=${sessionSeq(agent.session)} took=${tookMs}ms ` +
+          `items=${result.shadowedSeqs?.length ?? 0} tokens=${result.shadowedTokenCount ?? 0}`,
+      );
     } catch (err) {
       const code = errCode(err);
       wasBusy = code === 'busy';
       guard.noteResult(sessionId, { ok: false, code }, nowMs(), sessionSeq(agent.session));
       note({ event: 'compact-failed', sessionId, action: decision.action, code, why: errText(err) });
+      logWarn(`${decision.action} failed session=${sessionId.slice(0, 18)} code=${code ?? '?'}: ${errText(err)}`);
     } finally {
       clearTimeout(timer);
       // 只有**真的跑完了一次 measure**（成功或非 busy 的失败）才算这个 Session 已经预热。
@@ -240,6 +263,10 @@ export function apply(ctx, config = {}) {
       now: nowMs(),
     });
     if (decision.action === ACTION.NONE) return;
+    logInfo(
+      `decision=${decision.action} reason=${decision.reason} session=${sessionId.slice(0, 18)} ` +
+        `seq=${decision.seq} growth=${decision.growth}`,
+    );
     busy.add(sessionId);
     await runCompaction(agent, decision);
   }
@@ -264,6 +291,9 @@ export function apply(ctx, config = {}) {
       dangerSeq: cfg.dangerSeq,
       minGrowthSeq: cfg.minGrowthSeq,
     });
+    logInfo(
+      `loaded: enabled=${cfg.enabled} warnSeq=${cfg.warnSeq} dangerSeq=${cfg.dangerSeq} minGrowthSeq=${cfg.minGrowthSeq}`,
+    );
     return () => clearInterval(timer);
   });
 
