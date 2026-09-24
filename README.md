@@ -14,6 +14,14 @@ by compacting the session **before** its size reaches the zone where the stall b
 
 ## The problem, precisely
 
+> **⚠️ Read this first: the causal claim below was FALSIFIED by direct measurement.** The code-level facts
+> in the table are verified, but they are **not** the cause of the stall. `tools/measure-replay.js` runs
+> the product's own `TokenMeter._sync` over a reconstruction of the real session and the **entire 526,383-seq
+> cold replay costs 47 ms** — against a cold first turn measured at **16,008 ms** and turns that never
+> returned. The replay is ~340× too small. The cause is still **unknown**; what remains true is that cold
+> first turns are far slower than warm ones, it grows with session size, and `/compact` was the only
+> observed recovery. See `docs/DESIGN.md` → *Measured falsification*.
+
 A stalled session log looks like this, with no error anywhere:
 
 ```
@@ -55,6 +63,13 @@ Three properties follow from this, all confirmed against the real logs:
   size failed cold. *When* the replay happens is what decides the outcome.
 
 ## How the plugin fixes it
+
+> **Honest framing, given the falsification above:** the plugin does **not** absorb the mystery cost.
+> `compactNow` begins with `measure()`, which is cheap (47 ms for the whole session), so compacting at load
+> does not pay whatever the slow listener charges. What the plugin actually delivers is the automation of
+> the one operation observed to restore service — proactive compaction, at load when a session is already
+> large and between turns as it grows. If the slow listener scales with the visible *surface*, keeping the
+> surface small helps; **that is a hypothesis, not a result.**
 
 The replay is unavoidable — but **where you pay for it is not**. Paid inside the user's first turn it
 is a permanent hang; paid while the agent sits idle after a load it is just a slow start. And once
@@ -119,6 +134,7 @@ measure your own with `/rescue status` and adjust.
 | `src/frames.js` | *Offline only.* Read-only session-log analysis: per-frame zstd decode, synthetic-closer detection. |
 | `bin/dsh-session-rescue.mjs` | Read-only scan CLI — usable **without installing the plugin**. |
 | `tools/replay.js` | Replays a real session log through the detector to check hit/miss rates. |
+| `tools/measure-replay.js` | Runs the product's own `TokenMeter._sync` over a reconstruction of a real session log — the measurement that **falsified** the replay hypothesis (47 ms for 526,383 seqs). |
 | `test/*.test.js` | 55 unit and integration tests (`node --test`), run against a fake cordis context. |
 | `tools/Install-Plugin.ps1` | Idempotent install / rollback for a DSH profile — dry-run by default, snapshot-based. |
 | `docs/DESIGN.md` | Design notes: the mechanism with source citations, the fix, bounds and open questions. |

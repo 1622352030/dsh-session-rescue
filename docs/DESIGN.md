@@ -19,9 +19,9 @@ and `step/start` (`:553`), with only `await this.preStep(...)` (`:539`) in betwe
 were wrong and are recorded here so they are not re-derived: it is **not** a missing timeout, and it is
 **not** the network.
 
-What follows is the **leading hypothesis**, not a proven cause — see *Open questions* for the
-counter-evidence that keeps it provisional. Everything in the table is a code-level fact; the *causal*
-step from that replay to a stalled turn is the part that is not established.
+**The causal step below is FALSIFIED — see *Measured falsification* immediately after the table.** Every
+row in the table is a code-level fact; "therefore this replay stalls the turn" is not, and the replay has
+since been measured directly and is far too small to be the cause.
 
 ### The mechanism
 
@@ -41,6 +41,42 @@ stays silent — which is precisely the observed signature.
 Note that the replay walks the **integer seq space**, not the number of stored records. The log on disk
 batches streaming deltas into `reasoning-chunks` / `tool-call-chunks` / `text-chunks` records carrying a
 `seq0` plus a `dt` delta array, so ~17 k records expand to a dense ~517 k-event timeline in memory.
+
+### Measured falsification (supersedes the causal claim above)
+
+`tools/measure-replay.js` reconstructs the dense seq timeline from the real log — batched chunk records
+expanded, `sourceEventSeqs` ranges flattened into per-event seqs — and then runs the **product's own
+`TokenMeter._sync`** over it. The reconstruction validates itself: **12,071 of 12,073** fill-ins were
+independently confirmed as chunk seqs by the `sourceEventSeqs` ranges (99.98%), and the replay's own
+invariant checks (every cited source seq must be an `assistant/chunk` of the same turn and step) pass.
+
+| seq reconstructed | cold `_sync` |
+|---|---|
+| 50,000 | 10.7 ms |
+| 200,000 | 17.3 ms |
+| 400,000 | 34.8 ms |
+| **526,383 — the entire session** | **47.0 ms** |
+
+A full cold replay of the whole session costs **47 milliseconds**. The cold first turn this was supposed to
+explain took **16,008 ms**; the turns at seq 93 k and beyond never returned. The replay is ~340× too small
+for the first and cannot explain the second. **The replay is not the cause of the stall.**
+
+The production side agrees: `/compact` calls `tokenMeter.measure(session)` as its *first* step
+(`dsh-compaction-basic:935`), and both observed cold-start `/compact` runs reached `compaction/start` in
+1,013 ms and 1,117 ms at seq 388,770 and 446,452.
+
+What still stands: the cold first turn *is* catastrophically slower than a warm one on the same session
+(16,008 ms vs 231 ms), it grows with session size, and `/compact` was the only observed recovery.
+**What owns that time is unknown.**
+
+The likely *shape* of the answer is an awaited blocking operation inside an `agent/pre-step` or
+`system-prompt/assemble` listener. A concrete instance of that pattern exists in this very composition:
+`dsh-vision-router/lib/ollama-cold-start.js` installs an `agent/pre-step` wrapper that
+`await manager.ensure(provider, …)` — a network warmup bounded by `OLLAMA_WARMUP_TIMEOUT_MS = 120000` — and
+its own comment describes the intent as letting "a large cold model … load once instead of being
+misclassified as a 45s inference timeout". Its trigger conditions (a local Ollama provider *and* an image
+in the turn) do not match the observed text-only sessions, so it is a **template for the fault class, not
+the culprit** — but it shows this composition does contain listeners that block pre-step on network I/O.
 
 ### Measurements
 
@@ -145,28 +181,22 @@ not been built.
 
 ## Open questions (stated, not hidden)
 
-- **★ The causal link from the replay to the stall is NOT established, and there is counter-evidence.**
-  The cold full replay is real at code level, and it does run inside the pre-step window — but the
-  `/compact` path calls `tokenMeter.measure(session)` as its *first* step
-  (`dsh-compaction-basic/lib/index.js:935`) before it appends anything, and both observed cold-start
-  `/compact` runs reached `compaction/start` in **1,013 ms** (seq 388,770) and **1,117 ms** (seq 446,452).
-  Either the meter was already warm, or the replay itself costs about a second at ~400 k seq — and **both
-  branches bound it at ≈1 s, which cannot explain a 16 s pre-step or a turn that never returns.** So the
-  replay is a *leading candidate for what the plugin should stay away from*, not a proven cause of the
-  stall.
-- **The cold first turn's cost has never been attributed to a specific listener.** What is measured is the
-  total: 231 ms warm at seq 35,236 versus 16,008 ms cold at seq 45,585, growing with session size and
-  never returning at seq 93 k and beyond. Which of the `agent/pre-step` or `system-prompt/assemble`
-  listeners spends that time is unknown. `dsh-mnemon` is *unlikely* on code grounds — its `preStep`
-  awaits `next()` first (`dsh-mnemon/lib/index.js:5389-5391`) and its per-turn memory work is a
-  budget-capped `compose({scope, scenario, budget})` (`:1743-1749`) that never receives the conversation —
-  but that is an argument, not a measurement, and other listeners (`dsh-hindsight-coding-agents`,
-  `dsh-vision-router`, the core reminder/instruction hooks) are untested.
+- **★ The cause is unknown; the replay is excluded by measurement.** See *Measured falsification*: the
+  full cold replay of this session is 47 ms, against a 16,008 ms cold pre-step. The blocker is therefore
+  something else in the same window — most plausibly an awaited operation in one of the
+  `agent/pre-step` / `system-prompt/assemble` listeners. **No listener has been timed yet**, and timing
+  them needs a controlled reproduction (a session loaded from disk plus a scripted turn), which has not
+  been built.
+- **`dsh-mnemon` is unlikely on code grounds** — its `preStep` awaits `next()` first
+  (`dsh-mnemon/lib/index.js:5389-5391`) and its per-turn memory work is a budget-capped
+  `compose({scope, scenario, budget})` (`:1743-1749`) that never receives the conversation — but that is an
+  argument, not a measurement.
 - **Why compaction makes the next cold start cheap is not established** either. The measured effect is
   solid (never-returning → 1.6–10 s in all three observed episodes), but since `seq` does not shrink it
   cannot be a shorter replay; a smaller visible surface lowering per-event cost is a hypothesis.
-- **The per-event replay cost was never measured directly.** The ≈350 µs/event figure is an inference
-  from the cold/warm pre-step delta, and it is the number the counter-evidence above calls into question.
+- **The replay cost has now been measured directly** (`tools/measure-replay.js`): 47 ms for all 526,383
+  seqs, ≈0.09 µs/seq. The earlier ≈350 µs/event figure was inferred from the cold/warm pre-step delta and
+  is **retracted** — it attributed another listener's cost to the replay.
 - **The thresholds are a calibrated proxy, not a derived bound.** `seq` is cheap to read and does relate to
   the replay, so it is what the plugin watches; the crossing point depends on machine and session shape.
 - **"Never returned" means "longer than the user was willing to wait" (20–47 s in the observed cases).**
@@ -174,10 +204,20 @@ not been built.
 
 ### What this means for the plugin
 
-The prevention design is built on the leading hypothesis, deliberately: it keeps a session small and pays
-the cold-start cost once, at load, instead of inside the user's turn. That is defensible even if the cause
-turns out to be a different cold listener, because the measured effect — compaction restores service — is
-independent of the explanation. But the README must not claim the mechanism is proven, and it does not.
+The plugin's rationale is weaker than the design assumed, and the README says so:
+
+- **The GUARD does not absorb the mystery cost.** `compactNow` begins with `measure()`, which is cheap
+  (47 ms for the whole session), so compacting at load does not pay whatever the slow listener charges.
+- What the plugin actually delivers is the automation of the one operation observed to restore service:
+  proactive compaction, at load when a session is already large and between turns as it grows. If the slow
+  listener scales with the visible **surface**, keeping the surface small helps — a hypothesis, not a
+  result.
+- `seq` remains a reasonable thing to watch: free to read, monotonic, and a decent proxy for "this session
+  has grown large". It is a proxy for the risk, not a measurement of the cost.
+
+The design is retained because the alternative — do nothing and let the user rediscover the wedge by hand —
+is worse, and because compaction is the only measured remedy. It is **not** retained because the cause is
+understood: the cause is not understood.
 
 ## Appendix: offline forensics (still shipped, never acts)
 
