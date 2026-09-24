@@ -187,10 +187,37 @@ not been built.
   `agent/pre-step` / `system-prompt/assemble` listeners. **No listener has been timed yet**, and timing
   them needs a controlled reproduction (a session loaded from disk plus a scripted turn), which has not
   been built.
-- **`dsh-mnemon` is unlikely on code grounds** — its `preStep` awaits `next()` first
-  (`dsh-mnemon/lib/index.js:5389-5391`) and its per-turn memory work is a budget-capped
-  `compose({scope, scenario, budget})` (`:1743-1749`) that never receives the conversation — but that is an
-  argument, not a measurement.
+- **Candidates examined and set aside so far** — recorded with their evidence so they are not re-derived:
+  - `dsh-mnemon` — `preStep` awaits `next()` first (`:5389-5391`); its per-turn memory work is
+    `compose({scope, scenario, budget})` (`:1743-1749`), which never receives the conversation. Its
+    `hostSessionEvents(this.agent.session)` calls (`:5320`, `:5343`, `:5347`, `:5457`, `:5469`, `:5549`)
+    do materialise the whole `session.events` array, but the ones inspected are
+    `snapshot()` / `turnMemoryActivities()` / `assistantMessageText()` — diagnostics and accessors, not
+    pre-step work. **Not formally excluded.**
+  - `@vectorize-io/hindsight-coding-agents` — its `agent/pre-step` hook is real and awaits
+    `workspace.core.onPrompt(sessionId, prompt)` (`dist/dsh.js:18157`), plus once per process a
+    `seedIfCold` that awaits `ensureDaemon(..., { waitMs: 12e3 })` (`:17883`, with
+    `DAEMON_WAIT_SESSION_START_MS = 12000` at `:1781`) and `buildSessionStartContext` (`:17886`); all
+    errors are swallowed (`:17900`). **On this machine it appears inert**: `~/.hindsight` does not exist
+    at all (no config, runtime dir or logs), there is no `%TEMP%\hindsight-*` session cache, and the
+    observed workspace is a git repo with **no remote** — `deriveBankIdOrSkip` returns `null` on
+    "repository could not be identified" (`:364-376`), which sets `cfg.disabled = true`, makes
+    `workspaceFor` return `undefined`, and makes the hook return early at `:18151`. **Not formally
+    excluded** (the bank-id rule was not read in full).
+  - `dsh-vision-router/lib/ollama-cold-start.js` — awaits a network warmup on `agent/pre-step`
+    (`OLLAMA_WARMUP_TIMEOUT_MS = 120000`) but only for a local Ollama provider with an image in the turn.
+    A template for the fault class, not the culprit for these text-only sessions.
+- **★ New clue: the warm turns are expensive too, and the curve saturates.** The earlier framing assumed
+  only the cold path was costly. Warm pre-step rises from 231 ms at seq 35 k to ~1.1 s at seq 212 k, then
+  **saturates around 3–6 s from seq ~273 k onward** regardless of further growth. A saturating curve fits
+  a fixed-cost operation whose latency grew — e.g. a network round-trip through a degrading proxy — far
+  better than a linear `O(seq)` scan; the token meter's own `O(seq)` cost is 0.09 µs/seq, roughly **140×
+  cheaper** than the warm path's early slope. Whatever the cause is, **it is in the every-turn path, not
+  only in a cold one-time path.**
+- **Attribution now requires measurement, not more reading.** Two rounds of source review have produced
+  three set-aside candidates and no conviction. The cost has to be measured inside a live pre-step
+  waterfall — which needs a session loaded from disk plus a scripted turn in an isolated `DSH_HOME`, and
+  then bisecting the composition bundle by bundle.
 - **Why compaction makes the next cold start cheap is not established** either. The measured effect is
   solid (never-returning → 1.6–10 s in all three observed episodes), but since `seq` does not shrink it
   cannot be a shorter replay; a smaller visible surface lowering per-event cost is a hypothesis.
