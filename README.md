@@ -1,10 +1,12 @@
 # dsh-session-rescue
 
-> **Status: v0.2.0 — prevention, not detection.** The failure mechanism below was traced to specific
-> source lines and measured on a real 5.9 MB session log; the plugin logic is covered by 55 tests
-> (55 pass / 0 fail), and the plugin has been loaded and exercised in an **isolated** `DSH_HOME`
-> (never against the running instance). The stall itself has **not** been reproduced under control yet,
-> and one mechanism detail is still formally unproven — see *Limitations*.
+> **Status: v0.2.0 — prevention, not detection.** The stall was traced to a specific window and a specific
+> code path (below), and the plugin logic is covered by 55 tests (55 pass / 0 fail). The plugin has been
+> loaded and exercised in an **isolated** `DSH_HOME`, never against the running instance.
+> **Be careful reading the mechanism below: the code-level facts are verified, the causal link from the
+> replay to the stall is NOT** — there is counter-evidence, stated in `docs/DESIGN.md` → *Open questions*.
+> The stall has not been reproduced under control, and the cold first turn's cost has not been attributed
+> to a specific listener yet.
 
 A DeepSeek Harness plugin that stops the **cold-start turn stall**: after a restart or a session load,
 the first turn can block forever with the UI spinning and nothing in the log. This plugin prevents that

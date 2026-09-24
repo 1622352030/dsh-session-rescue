@@ -19,6 +19,10 @@ and `step/start` (`:553`), with only `await this.preStep(...)` (`:539`) in betwe
 were wrong and are recorded here so they are not re-derived: it is **not** a missing timeout, and it is
 **not** the network.
 
+What follows is the **leading hypothesis**, not a proven cause — see *Open questions* for the
+counter-evidence that keeps it provisional. Everything in the table is a code-level fact; the *causal*
+step from that replay to a stalled turn is the part that is not established.
+
 ### The mechanism
 
 | Step | Source |
@@ -141,18 +145,39 @@ not been built.
 
 ## Open questions (stated, not hidden)
 
-- **Why compaction makes the next cold start cheap is not established.** The measured effect is solid
-  (never-returning → 1.6–10 s in all three episodes), but it *cannot* come from a shorter replay, because
-  `seq` does not shrink. The most likely explanation is that a smaller visible surface lowers the
-  per-event cost of the fold and of `priceSurface`, but that is a hypothesis, not a measurement. The
-  plugin relies on the measured effect.
-- **The per-event replay cost was never measured directly.** The cold/warm contrast (16,008 ms vs 231 ms
-  at comparable seq) isolates the cold path from the production system; the resulting ≈350 µs/event
-  estimate is an inference from that delta.
-- **The thresholds are a calibrated proxy, not a derived bound.** `seq` drives the loop and is free to
-  read, so it is what the plugin watches; the crossing point depends on the machine and on session shape.
+- **★ The causal link from the replay to the stall is NOT established, and there is counter-evidence.**
+  The cold full replay is real at code level, and it does run inside the pre-step window — but the
+  `/compact` path calls `tokenMeter.measure(session)` as its *first* step
+  (`dsh-compaction-basic/lib/index.js:935`) before it appends anything, and both observed cold-start
+  `/compact` runs reached `compaction/start` in **1,013 ms** (seq 388,770) and **1,117 ms** (seq 446,452).
+  Either the meter was already warm, or the replay itself costs about a second at ~400 k seq — and **both
+  branches bound it at ≈1 s, which cannot explain a 16 s pre-step or a turn that never returns.** So the
+  replay is a *leading candidate for what the plugin should stay away from*, not a proven cause of the
+  stall.
+- **The cold first turn's cost has never been attributed to a specific listener.** What is measured is the
+  total: 231 ms warm at seq 35,236 versus 16,008 ms cold at seq 45,585, growing with session size and
+  never returning at seq 93 k and beyond. Which of the `agent/pre-step` or `system-prompt/assemble`
+  listeners spends that time is unknown. `dsh-mnemon` is *unlikely* on code grounds — its `preStep`
+  awaits `next()` first (`dsh-mnemon/lib/index.js:5389-5391`) and its per-turn memory work is a
+  budget-capped `compose({scope, scenario, budget})` (`:1743-1749`) that never receives the conversation —
+  but that is an argument, not a measurement, and other listeners (`dsh-hindsight-coding-agents`,
+  `dsh-vision-router`, the core reminder/instruction hooks) are untested.
+- **Why compaction makes the next cold start cheap is not established** either. The measured effect is
+  solid (never-returning → 1.6–10 s in all three observed episodes), but since `seq` does not shrink it
+  cannot be a shorter replay; a smaller visible surface lowering per-event cost is a hypothesis.
+- **The per-event replay cost was never measured directly.** The ≈350 µs/event figure is an inference
+  from the cold/warm pre-step delta, and it is the number the counter-evidence above calls into question.
+- **The thresholds are a calibrated proxy, not a derived bound.** `seq` is cheap to read and does relate to
+  the replay, so it is what the plugin watches; the crossing point depends on machine and session shape.
 - **"Never returned" means "longer than the user was willing to wait" (20–47 s in the observed cases).**
   Nothing here proves the loop is non-terminating.
+
+### What this means for the plugin
+
+The prevention design is built on the leading hypothesis, deliberately: it keeps a session small and pays
+the cold-start cost once, at load, instead of inside the user's turn. That is defensible even if the cause
+turns out to be a different cold listener, because the measured effect — compaction restores service — is
+independent of the explanation. But the README must not claim the mechanism is proven, and it does not.
 
 ## Appendix: offline forensics (still shipped, never acts)
 
