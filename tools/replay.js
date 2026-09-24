@@ -14,7 +14,6 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 
 import { createStallDetector, FRAME } from '../src/detect.js';
-import { createRepairPlanner } from '../src/repair-plan.js';
 import { analyzeFrames } from '../src/frames.js';
 
 const args = process.argv.slice(2);
@@ -23,7 +22,6 @@ const stallMs = Number(args.find((a) => /^\d+$/.test(a)) ?? 20000);
 const winIdx = args.indexOf('--window');
 const WINDOW = winIdx >= 0 ? Number(args[winIdx + 1]) || 2 * 1024 * 1024 : 2 * 1024 * 1024;
 const DEBUG = args.includes('--debug');
-const PLANNER = args.includes('--plan');
 
 const root = path.join(
   process.env.DSH_HOME ?? path.join(process.env.APPDATA ?? '', 'dsh-desktop', 'harness'),
@@ -129,25 +127,11 @@ const knownStalls = [...turns.values()].filter((r) => r.reason === 'interrupted'
 //   之后所有比较恒为 false ⇒ 检测器**静默失效**（本脚本第二版就是这样在 C 会话上 0/3 漏报）。
 let vnow = replayFrames.find((f) => Number.isFinite(f.time))?.time ?? Date.now();
 const det = createStallDetector({ stallMs, now: () => vnow });
-// --plan：把每个判定交给策略层，看它在**真实时序**下会做什么（回放一律 dry-run，不产生副作用）
-const sessionId = path.basename(path.dirname(file));
-const planner = PLANNER
-  ? createRepairPlanner({ dryRun: !args.includes('--plan-live'), now: () => vnow })
-  : null;
-const plans = [];
 const hits = [];
 for (const f of replayFrames) {
   if (typeof f.time === 'number') vnow = Math.max(vnow, f.time); // 单调，防止回填时间戳让时钟倒退
   const v = det.check(vnow); // 事件之间的"沉默"在这里被判定
-  if (v) {
-    hits.push({ ...v, at: vnow });
-    if (planner) {
-      const plan = planner.plan(v, { sessionId, hasPendingMessage: true });
-      plans.push({ at: vnow, plan });
-      // 回放里把 auto-repair 计划记为"已执行"，以验证冷却/次数上限在真实时序下的行为
-      if (plan.reason === 'auto-repair') planner.noteApplied(sessionId);
-    }
-  }
+  if (v) hits.push({ ...v, at: vnow });
   if (DEBUG) {
     if (f.type === FRAME.TURN_START) {
       console.log('  [dbg] turn/start turn=' + (f.data?.turn ?? '?') + ' @' + local(vnow) + ' seq=' + f.seq);
@@ -198,11 +182,3 @@ console.log('日志分析(frames.js): syntheticClosers=' + a.syntheticClosers +
   ' stalledTurns=' + a.stalledTurns.length + ' [' + a.stalledTurns.map((t) => t.turn).join(',') + ']' +
   ' pendingTurn=' + (a.pendingTurn ? a.pendingTurn.turn : 'none') +
   ' pendingUserMessage=' + (a.pendingUserMessage ? 'yes(len=' + a.pendingUserMessage.text.length + ')' : 'no'));
-if (planner) {
-  console.log('策略层计划（dry-run，按真实时刻）:');
-  for (const { at, plan } of plans) {
-    console.log('   ' + local(at) + '  ' + plan.reason + '  [' + plan.actions.map((a) => a.kind).join(' → ') + ']' +
-      (plan.giveUp ? '  giveUp=' + plan.giveUp : ''));
-  }
-  console.log('策略层统计: ' + JSON.stringify(planner.stats()));
-}

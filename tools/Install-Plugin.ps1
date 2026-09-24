@@ -56,9 +56,12 @@ function Write-Head($text) { Write-Host ""; Write-Host ("== " + $text) }
 
 function Get-LatestSnapshot {
   if (-not (Test-Path $BackupRoot)) { return $null }
-  $dirs = Get-ChildItem -LiteralPath $BackupRoot -Directory | Sort-Object Name -Descending
-  if (-not $dirs -or $dirs.Count -eq 0) { return $null }
-  return $dirs[0].FullName
+  # 只认 <yyyyMMdd-HHmmss> 形态的快照目录：自测沙箱等其它目录不得干扰回滚
+  $dirs = Get-ChildItem -LiteralPath $BackupRoot -Directory |
+          Where-Object { $_.Name -match '^\d{8}-\d{6}$' } |
+          Sort-Object Name -Descending
+  if (-not $dirs -or @($dirs).Count -eq 0) { return $null }
+  return @($dirs)[0].FullName
 }
 
 function New-Snapshot {
@@ -139,14 +142,27 @@ if (-not $junctionExists) {
 }
 
 if (-not $alreadyInBundles) {
-  $pattern = '("bundles"\s*:\s*\[)'
-  if ($raw -notmatch $pattern) { throw '在 profile\package.json 里找不到 "bundles": [ 结构，已中止（未改动文件）' }
-  $emptyArray = '("bundles"\s*:\s*\[\s*\])'
-  if ($raw -match $emptyArray) {
-    $replacement = '"bundles": [ "' + $PluginName + '" ]'
-    $new = [regex]::Replace($raw, $emptyArray, $replacement, 1)
+  # ★必须追加到**数组末尾**：dsh.profile.bundles 是**有序**的 bundle 层列表，
+  #   官方层（@deepseek-ai/dsh-base 等）必须保持在前；插到首位会让本插件先于 base 加载。
+  $m = [regex]::Match($raw, '"bundles"\s*:\s*\[')
+  if (-not $m.Success) { throw '在 profile\package.json 里找不到 "bundles": [ 结构，已中止（未改动文件）' }
+  $scan = $m.Index + $m.Length
+  $depth = 1
+  $i = $scan
+  while ($i -lt $raw.Length -and $depth -gt 0) {
+    $ch = $raw[$i]
+    if ($ch -eq '[') { $depth = $depth + 1 } elseif ($ch -eq ']') { $depth = $depth - 1 }
+    $i = $i + 1
+  }
+  if ($depth -ne 0) { throw '"bundles" 数组未闭合，已中止（未改动文件）' }
+  $closeIdx = $i - 1
+  $inner = $raw.Substring($scan, $closeIdx - $scan)
+  $nl = [Environment]::NewLine
+  $tail = $nl + '      "' + $PluginName + '"' + $nl + '    '
+  if ($inner.Trim().Length -eq 0) {
+    $new = $raw.Substring(0, $closeIdx) + $tail + $raw.Substring($closeIdx)
   } else {
-    $new = [regex]::Replace($raw, $pattern, ('$1' + [Environment]::NewLine + '      "' + $PluginName + '",'), 1)
+    $new = $raw.Substring(0, $closeIdx) + ',' + $tail + $raw.Substring($closeIdx)
   }
   try { $null = $new | ConvertFrom-Json } catch { throw ('插入后 JSON 校验失败，未写入。请用 -Rollback 恢复：' + $_.Exception.Message) }
   [System.IO.File]::WriteAllText($PkgPath, $new, (New-Object System.Text.UTF8Encoding($false)))

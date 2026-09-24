@@ -62,6 +62,7 @@ Assert ($rc -eq 0) '安装退出码为 0'
 $pkgA = Read-Pkg
 Assert (@($pkgA.dsh.profile.bundles) -contains 'dsh-session-rescue') 'bundles 里出现 dsh-session-rescue'
 Assert (@($pkgA.dsh.profile.bundles).Count -eq 2) 'bundles 长度为 2（未重复、未丢原条目）'
+Assert (@($pkgA.dsh.profile.bundles)[-1] -eq 'dsh-session-rescue') '新条目追加在**数组末尾**（有序层语义）'
 Assert (@($pkgA.dsh.profile.bundles) -contains 'some-other-plugin') '原有 bundle 仍在'
 Assert ((Read-Pkg) -ne $null) '写入后 JSON 仍可解析'
 Assert (Test-Path $Junction) 'junction 已建立'

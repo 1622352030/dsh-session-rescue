@@ -1,14 +1,15 @@
 {
   "name": "dsh-session-rescue",
-  "version": "0.1.0",
-  "description": "Watchdog that detects a stalled Harness turn, cancels it, rebuilds the session in place and re-runs the pending message.",
+  "version": "0.2.0",
+  "description": "Prevents the DeepSeek Harness cold-start turn stall: after a restart or session load the first turn can block forever while the token meter synchronously replays the whole session log; this plugin compacts the session before its size reaches that danger zone, so the replay stays cheap.",
   "keywords": [
     "dsh-plugin",
     "dsh",
     "deepseek-harness",
     "session",
-    "watchdog",
-    "recovery"
+    "compaction",
+    "cold-start",
+    "stall"
   ],
   "license": "MIT",
   "type": "module",
@@ -29,8 +30,7 @@
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
-    "LICENSE",
-    "screenshots.json"
+    "LICENSE"
   ],
   "main": "src/host.js",
   "bin": {
@@ -46,7 +46,7 @@
   },
   "peerDependencies": {},
   "scripts": {
-    "typecheck": "node --check src/detect.js && node --check src/repair-plan.js && node --check src/frames.js && node --check src/host.js",
-    "test": "node --test test/detect.test.js test/repair-plan.test.js test/frames.test.js test/host.test.js"
+    "typecheck": "node --check src/host.js && node --check src/guard.js && node --check src/size.js && node --check src/detect.js && node --check src/frames.js",
+    "test": "node --test test/size.test.js test/guard.test.js test/detect.test.js test/frames.test.js test/host.test.js"
   }
 }

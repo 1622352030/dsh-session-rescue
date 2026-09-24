@@ -8,6 +8,23 @@
 # 说明：本插件当前**只实现 host 侧**，因此这里只插入一条；
 # client 侧（状态展示）尚未实现，故 package.json 里也**没有**声明 `dsh.client`——
 # 市场规范要求"描述与代码一致"，未实现的能力不做声明。
+#
+# 全部配置项都可省略（默认值见 src/host.js 的 DEFAULTS 与 src/size.js 的标定说明）。
+# 需要改阈值时的写法（去掉注释即可），例如：
+#
+#   - insert:
+#       - id: session-rescue
+#         name: dsh-session-rescue
+#         config:
+#           enabled: true          # false = 只观测并报告，绝不调用压缩
+#           warnSeq: 40000         # 从该规模开始提醒并允许主动压缩
+#           dangerSeq: 80000       # 越过此线，冷启动首轮可能永不返回 ⇒ 载入后抢跑压缩
+#           minGrowthSeq: 20000    # 自上次压缩以来至少增长这么多才再次压缩（seq 不会回落）
+#           cooldownMs: 60000      # 两次压缩尝试之间的最短间隔
+#           maxAttemptsPerSession: 6
+#           maxBusyStreak: 5       # 连续被核心以 busy 拒绝多少次后放弃
+#           pollMs: 30000          # 巡检兜底间隔（agent/status 之外的保险）
+#           compactionTimeoutMs: 600000
 
 - insert:
     - id: session-rescue

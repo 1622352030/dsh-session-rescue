@@ -14,3 +14,6 @@ docs/API-NOTES.md
 docs/PLAN.md
 docs/SCAN-REPORT.md
 docs/MARKET-CHECKLIST.md
+
+# ── 隔离实验环境：内含真实会话日志副本（大会话、含私有内容），**不发布** ──
+lab/
